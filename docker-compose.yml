@@ -1,0 +1,107 @@
+# Redpanda + topic bootstrap are always started. The four pipeline services live
+# behind the `services` profile so you can choose:
+#
+#   docker compose up -d                     # Redpanda + topics only
+#                                            # (then run Go binaries in terminals)
+#   docker compose --profile services up     # full pipeline in containers
+#
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+    ports:
+      # 9092 for in-network clients (containers), 19092 for host clients.
+      - "9092:9092"
+      - "19092:19092"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Web UI for browsing topics and messages (the Kafka analog of TablePlus).
+  # Open http://localhost:8080 to watch trades, batches and the dead-letter queue.
+  console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    container_name: redpanda-console
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+
+  # One-shot job that creates the four topics, then exits.
+  topic-init:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        for t in trades trades.normalized; do
+          rpk topic create $$t -p 1 --brokers redpanda:9092 || true
+        done
+        for t in settlement_batches dead_letter; do
+          rpk topic create $$t -p 1 --brokers redpanda:9092 || true
+        done
+        rpk topic list --brokers redpanda:9092
+
+  feed-adapter:
+    profiles: ["services"]
+    build: .
+    entrypoint: ["/usr/local/bin/feed-adapter"]
+    depends_on:
+      topic-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+      HL_COINS: "BTC,ETH"
+
+  ingestor:
+    profiles: ["services"]
+    build: .
+    entrypoint: ["/usr/local/bin/ingestor"]
+    depends_on:
+      topic-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+
+  batch-publisher:
+    profiles: ["services"]
+    build: .
+    entrypoint: ["/usr/local/bin/batch-publisher"]
+    depends_on:
+      topic-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+      BATCH_MAX_SIZE: "50"
+      BATCH_MAX_WAIT: "10s"
+
+  chain-submitter:
+    profiles: ["services"]
+    build: .
+    entrypoint: ["/usr/local/bin/chain-submitter"]
+    depends_on:
+      topic-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKERS: "redpanda:9092"
+      CHAIN_FAILURE_RATE: "0.2"
+      SUBMIT_MAX_ATTEMPTS: "4"
