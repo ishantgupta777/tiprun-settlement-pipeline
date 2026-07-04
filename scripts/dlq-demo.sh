@@ -10,6 +10,15 @@ cd "$(dirname "$0")/.."
 
 LOGDIR="${LOGDIR:-/tmp/tiprun}"
 mkdir -p "$LOGDIR"
+
+# Refuse to run if another chain-submitter or batch-publisher is active: it would
+# consume/produce settlement_batches concurrently and muddy the demo.
+if ps -A -o command 2>/dev/null | grep -E "(bin|cmd)/(chain-submitter|batch-publisher)" | grep -qv grep; then
+  echo "ERROR: a chain-submitter or batch-publisher is already running." >&2
+  echo "Stop it first; this demo runs its own isolated chain-submitter." >&2
+  exit 1
+fi
+
 go build -o bin/chain-submitter ./cmd/chain-submitter
 go build -o bin/verify ./cmd/verify
 
