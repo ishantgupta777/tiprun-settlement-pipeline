@@ -7,6 +7,10 @@ resulting payouts into batches, and submits each batch as a single (mocked)
 on-chain transaction. It's written in Go, uses Redpanda as the broker, and
 franz-go as the Kafka client.
 
+**Intro walkthrough**
+
+[![Hyperliquid Trade Settlement Pipeline Overview - Watch Video](https://cdn.loom.com/sessions/thumbnails/0aa2652adedb4315ab12c244be16f515-d2c0650fd86157a0-full-play.gif#t=0.1)](https://www.loom.com/share/0aa2652adedb4315ab12c244be16f515)
+
 It runs as four separate processes so that any one of them can be restarted
 mid-run without losing data:
 
@@ -48,12 +52,12 @@ What I chose not to build is listed in [Trade-offs](#trade-offs-and-what-i-left-
 
 ## The four components
 
-| Process | Reads from | Writes to | Job |
-|---|---|---|---|
-| feed-adapter | Hyperliquid WS | `trades` | connect, subscribe, ping, reconnect, map to internal schema |
-| ingestor | `trades` | `trades.normalized` | validate, normalize, drop duplicates |
-| batch-publisher | `trades.normalized` | `settlement_batches` | accumulate and flush one batch per size/time trigger |
-| chain-submitter | `settlement_batches` | `dead_letter` | validate, submit with retries, dead-letter on failure |
+| Process         | Reads from           | Writes to            | Job                                                         |
+| --------------- | -------------------- | -------------------- | ----------------------------------------------------------- |
+| feed-adapter    | Hyperliquid WS       | `trades`             | connect, subscribe, ping, reconnect, map to internal schema |
+| ingestor        | `trades`             | `trades.normalized`  | validate, normalize, drop duplicates                        |
+| batch-publisher | `trades.normalized`  | `settlement_batches` | accumulate and flush one batch per size/time trigger        |
+| chain-submitter | `settlement_batches` | `dead_letter`        | validate, submit with retries, dead-letter on failure       |
 
 ### Why the ingestor and batch-publisher are two processes
 
@@ -115,7 +119,7 @@ validation and dedup.
   "flush_reason": "size",
   "trade_count": 25,
   "total_notional": "950761.1088629",
-  "trades": [ "...array of trade objects..." ],
+  "trades": ["...array of trade objects..."],
   "producer": "batch-publisher"
 }
 ```
@@ -240,16 +244,16 @@ for this kind of pipeline. It's the first thing I'd add with more time.
 
 What I handle:
 
-| Situation | What happens |
-|---|---|
-| WebSocket drops | reconnect with exponential backoff, re-subscribe |
-| WebSocket goes idle | ping every 20s (server closes idle connections at 60s) |
-| Broker briefly unavailable on produce | producer retries with backoff; the offset never moves past an unwritten record |
-| A consumer is restarted mid-run | uncommitted records are re-read; a 6s group session timeout means the restarted process gets its partitions back within seconds |
-| batch-publisher dies with a half-full batch | those offsets were never committed, so the trades come back and get re-batched |
-| Chain submit fails | exponential backoff with jitter, then dead-letter |
-| Invalid or unparseable batch | dead-lettered immediately |
-| Duplicate delivery | dedup in the ingestor plus `batch_id` idempotency at the chain |
+| Situation                                   | What happens                                                                                                                    |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| WebSocket drops                             | reconnect with exponential backoff, re-subscribe                                                                                |
+| WebSocket goes idle                         | ping every 20s (server closes idle connections at 60s)                                                                          |
+| Broker briefly unavailable on produce       | producer retries with backoff; the offset never moves past an unwritten record                                                  |
+| A consumer is restarted mid-run             | uncommitted records are re-read; a 6s group session timeout means the restarted process gets its partitions back within seconds |
+| batch-publisher dies with a half-full batch | those offsets were never committed, so the trades come back and get re-batched                                                  |
+| Chain submit fails                          | exponential backoff with jitter, then dead-letter                                                                               |
+| Invalid or unparseable batch                | dead-lettered immediately                                                                                                       |
+| Duplicate delivery                          | dedup in the ingestor plus `batch_id` idempotency at the chain                                                                  |
 
 What I don't handle (and know about):
 
